@@ -1,7 +1,11 @@
 # SaANN MCP
 
+[![Tests](https://github.com/ale99bra/SaANN/workflows/Run%20Tests/badge.svg)](https://github.com/ale99bra/SaANN/actions)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A standalone, local [Model Context Protocol](https://modelcontextprotocol.io/)
-server that exposes the SaANN machine-learning library over MCP stdio. It
+server that exposes the [SaANN](https://github.com/ale99bra/SaANN/) machine-learning library over MCP stdio. It
 trains and evaluates models on the machine running the client; it requires no
 Docker, FastAPI service, or external backend.
 
@@ -97,3 +101,11 @@ Replace the example path with the absolute path to this repository.
 Both configurations run the local project. `uv run` synchronizes the
 repository's project environment; `uvx --from` runs the project command from
 the specified local source.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](/LICENCE) file for details.
+
+## Author
+
+**Alessio Branda** - [GitHub Profile](https://github.com/ale99bra)
