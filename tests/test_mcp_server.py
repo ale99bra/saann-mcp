@@ -7,6 +7,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
+from PIL import Image
+from saann.losses import get_loss_functions
+from saann.metrics import Metrics
 
 from server import _evaluation_metrics, _read_tabular_data, mcp
 
@@ -198,6 +201,48 @@ async def test_mcp_trains_cnn_from_temporary_class_directories(
 
 
 @pytest.mark.asyncio
+async def test_mcp_trains_cnn_with_underscored_class_directory(
+    tmp_path, monkeypatch
+):
+    dataset = tmp_path / "underscored_images"
+    for class_index, class_name in enumerate(("green_area", "water")):
+        class_dir = dataset / class_name
+        class_dir.mkdir(parents=True)
+        for image_index in range(6):
+            image = Image.new(
+                "RGB",
+                (16, 16),
+                (20, 40 + class_index * 180, 90 + image_index),
+            )
+            image.save(class_dir / f"{image_index}.png")
+    monkeypatch.chdir(tmp_path)
+
+    training_result = await mcp.call_tool(
+        "train_model",
+        {
+            "dataset_path": str(dataset),
+            "model_type": "cnn",
+            "epochs": 1,
+            "batch_size": 2,
+        },
+    )
+    training = _result_json(training_result)
+    evaluation_result = await mcp.call_tool(
+        "evaluate_model",
+        {
+            "model_path": training["checkpoint_path"],
+            "test_data_path": str(dataset),
+        },
+    )
+
+    evaluation = _result_json(evaluation_result)
+    assert training["status"] == "completed"
+    assert math.isfinite(training["metrics"]["train_loss"])
+    assert evaluation["status"] == "completed"
+    assert 0.0 <= evaluation["metrics"]["accuracy"] <= 1.0
+
+
+@pytest.mark.asyncio
 async def test_mcp_training_rejects_missing_files_and_invalid_parameters(tmp_path):
     await _assert_tool_error(
         "train_model",
@@ -239,3 +284,30 @@ def test_evaluation_metrics_validate_prediction_dimensions():
     targets = np.ones((2, 1))
     with pytest.raises(ValueError, match="does not match target shape"):
         _evaluation_metrics(targets, np.ones((2, 2)), classification=False)
+
+
+def test_evaluation_metrics_use_saann_native_losses_and_metrics():
+    classification_targets = np.eye(2)[[0, 1, 1]]
+    classification_predictions = np.array(
+        [[0.9, 0.1], [0.2, 0.8], [0.8, 0.2]]
+    )
+    classification_metrics = _evaluation_metrics(
+        classification_targets, classification_predictions, classification=True
+    )
+    cross_entropy, _, _ = get_loss_functions("cross-entropy")
+    assert classification_metrics["loss"] == pytest.approx(
+        cross_entropy(classification_targets, classification_predictions)
+    )
+    assert classification_metrics["accuracy"] == pytest.approx(
+        Metrics(classification_targets, classification_predictions).micro_f1()
+    )
+
+    regression_targets = np.array([[1.0], [3.0]])
+    regression_predictions = np.array([[1.5], [2.0]])
+    regression_metrics = _evaluation_metrics(
+        regression_targets, regression_predictions, classification=False
+    )
+    mse, _, _ = get_loss_functions("mse")
+    assert regression_metrics == {
+        "loss": pytest.approx(mse(regression_targets, regression_predictions))
+    }

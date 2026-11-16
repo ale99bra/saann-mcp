@@ -50,14 +50,17 @@ written under `saann_models/` in the server's current working directory.
   directory.
 - `evaluate_model(model_path, test_data_path)`: Evaluate a checkpoint created
   by this server. The corresponding `.saann.json` metadata file must remain
-  beside the checkpoint.
+  beside the checkpoint. Evaluation reports SaANN's native loss and, for
+  classification, its micro-F1 score (equivalent to single-label accuracy).
 
 For MLP datasets, use numeric feature columns and a target in the final column.
 Integer targets with up to 20 distinct values and non-numeric targets are
 treated as classification; other numeric targets are treated as regression.
 For CNN datasets, include at least two class subdirectories containing BMP,
 JPEG, PNG, TIFF, or WebP images. Evaluation data must use the same features or
-classes used during training.
+classes used during training. SaANN uses the part of each class-directory name
+before the first underscore as its class label (for example, `green_area` is
+treated as `green`), so these normalized class names must be unique.
 
 ## Configure an MCP client
 

@@ -18,6 +18,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 with redirect_stdout(sys.stderr):
+    from saann import losses as saann_losses
+    from saann.metrics import Metrics
     from saann.models import CNN, SequentialModel, load_model
     from saann.processing import ImageProcessing
 
@@ -158,6 +160,18 @@ def _validate_image_directory(directory_path: str) -> tuple[Path, list[Path]]:
     return path, class_directories
 
 
+def _saann_image_class_names(class_directories: list[Path]) -> list[str]:
+    """Apply SaANN's underscore-prefix convention to image directory names."""
+    class_names = [directory.name.split("_", maxsplit=1)[0] for directory in class_directories]
+    if any(not name for name in class_names):
+        raise ValueError("SaANN image class names must have a non-empty prefix before '_'.")
+    if len(set(class_names)) != len(class_names):
+        raise ValueError(
+            "SaANN treats image class directories with the same prefix before '_' as one class."
+        )
+    return class_names
+
+
 def _checkpoint_path() -> Path:
     """Create a unique checkpoint path under the current working directory."""
     directory = Path.cwd() / CHECKPOINT_DIRECTORY
@@ -202,16 +216,11 @@ def _evaluation_metrics(
         )
     if not np.isfinite(predictions).all():
         raise ValueError("Model produced non-finite predictions.")
+    loss_name = "cross-entropy" if classification else "mse"
+    loss_function, _, _ = saann_losses.get_loss_functions(loss_name)
+    metrics = {"loss": float(loss_function(targets, predictions))}
     if classification:
-        probabilities = np.clip(predictions, np.finfo(np.float64).tiny, 1.0)
-        loss = -float(np.mean(np.sum(targets * np.log(probabilities), axis=1)))
-    else:
-        loss = float(np.mean(np.square(targets - predictions)))
-    metrics = {"loss": loss}
-    if classification:
-        actual_classes = np.argmax(targets, axis=1)
-        predicted_classes = np.argmax(predictions, axis=1)
-        metrics["accuracy"] = float(np.mean(actual_classes == predicted_classes))
+        metrics["accuracy"] = float(Metrics(targets, predictions).micro_f1())
     return metrics
 
 
@@ -297,20 +306,17 @@ def train_model(
             ],
             learning_rate=lr,
         )
+        loss_function = "cross-entropy" if classification else "mse"
         model.fit(
             X_train,
             y_train,
             epochs=epochs,
             batch_size=batch_size,
-            loss_function="cross-entropy" if classification else "mse",
+            loss_function=loss_function,
             graphical=False,
         )
         predictions = model.predict(X_test)
         metrics = _evaluation_metrics(y_test, predictions, classification)
-        train_loss = float(model.final_loss)
-        if not math.isfinite(train_loss):
-            raise ValueError("Training produced a non-finite loss.")
-        metrics["train_loss"] = train_loss
         metadata = {
             "model_type": model_type,
             "task": "classification" if classification else "regression",
@@ -319,14 +325,18 @@ def train_model(
         }
     else:
         image_path, class_directories = _validate_image_directory(dataset_path)
+        expected_classes = _saann_image_class_names(class_directories)
         image_processor = ImageProcessing(images_path=str(image_path))
         X_train, X_test, y_train, y_test, image_classes = image_processor.ready_dataset(
             size=48,
             shuffle=True,
             split_test_percentage=0.2,
         )
-        if set(image_classes) != {directory.name for directory in class_directories}:
-            raise ValueError("SaANN's image classes did not match the dataset directories.")
+        if set(image_classes) != set(expected_classes):
+            raise ValueError(
+                f"SaANN image classes {image_classes} did not match the normalized "
+                f"dataset classes {expected_classes}."
+            )
         model = CNN(filter_size=3, num_filters=8, padding=1, stride=1, gpu=False)
         input_size = model.get_input_size(X_train=X_train)
         output_dim = y_train.shape[1]
@@ -347,15 +357,16 @@ def train_model(
         )
         predictions = model.predict(X_test)
         metrics = _evaluation_metrics(y_test, predictions, classification=True)
-        train_loss = float(model.final_loss)
-        if not math.isfinite(train_loss):
-            raise ValueError("Training produced a non-finite loss.")
-        metrics["train_loss"] = train_loss
         metadata = {
             "model_type": model_type,
             "task": "classification",
             "class_labels": list(image_classes),
         }
+
+    train_loss = float(model.final_loss)
+    if not math.isfinite(train_loss):
+        raise ValueError("Training produced a non-finite loss.")
+    metrics["train_loss"] = train_loss
 
     checkpoint = _checkpoint_path()
     model.save_model(str(checkpoint))
@@ -376,8 +387,8 @@ def evaluate_model(model_path: str, test_data_path: str) -> dict[str, Any]:
 
     The test CSV must have the same feature columns and target format as the
     training CSV. CNN test data must use the same class-folder names as the
-    training image directory. Returns mean squared error (as loss) and
-    classification accuracy when applicable.
+    training image directory. Returns SaANN's native MSE or cross-entropy loss,
+    plus its micro-F1 score (single-label accuracy) for classification.
     """
     checkpoint = Path(model_path).expanduser()
     if not checkpoint.is_file():
@@ -399,7 +410,11 @@ def evaluate_model(model_path: str, test_data_path: str) -> dict[str, Any]:
     elif metadata.get("model_type") == "cnn":
         _, class_directories = _validate_image_directory(test_data_path)
         expected_classes = metadata.get("class_labels")
-        observed_classes = [directory.name for directory in class_directories]
+        if not isinstance(expected_classes, list) or not all(
+            isinstance(name, str) for name in expected_classes
+        ):
+            raise ValueError("CNN checkpoint metadata has invalid class labels.")
+        observed_classes = _saann_image_class_names(class_directories)
         if set(observed_classes) != set(expected_classes):
             raise ValueError("Test image classes do not match the model's training classes.")
         image_processor = ImageProcessing(images_path=str(Path(test_data_path).expanduser()))
